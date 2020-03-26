@@ -1,0 +1,134 @@
+import { DocumentClient } from 'aws-sdk/clients/dynamodb'
+import * as AWS  from 'aws-sdk'
+
+import { TodoUpdate } from '../models/TodoUpdate'
+import {TodoItem} from '../models/TodoItem'
+
+export class TodoAccess{
+
+    constructor(
+        private readonly docClient: DocumentClient = createDynamoDBClient(),
+        private readonly todoTable = process.env.TODOS_TABLE,
+        private readonly s3 = new AWS.S3({ signatureVersion: 'v4'}),
+        private readonly bucketName = process.env.S3_BUCKET
+        ){
+    }
+
+    async getAllTodos(): Promise<TodoItem[]> {
+    
+        const result = await this.docClient.scan({
+          TableName: this.todoTable
+        }).promise()
+    
+        const items = result.Items
+        return items as TodoItem[]
+    }
+
+    async getAllTodosForUser(userId: string): Promise<TodoItem[]> {
+    
+        const result = await this.docClient.query({
+          TableName: this.todoTable,
+          KeyConditionExpression: 'userId = :userId',
+          ExpressionAttributeValues:{
+              ':userId': userId
+          }
+        }).promise()
+  
+        const items = result.Items
+        return items as TodoItem[]
+    }
+    
+    async createTodo(todoItem: TodoItem): Promise<TodoItem> {
+        await this.docClient.put({
+        TableName: this.todoTable,
+        Item: todoItem
+        }).promise()
+    
+        return todoItem
+    }
+
+    async deleteTodo(userId: string, todoId: string) {
+
+        await this.docClient
+            .delete({
+                TableName: this.todoTable,
+                Key: {
+                    "userId" : userId,
+                    "todoId" : todoId
+                },
+            }).promise();
+
+        console.log("Deleted todo " + todoId)
+    }
+
+    async addTodoAttachment(userId: string, todoId: string, attachmentUrl: string) {
+
+        const split = attachmentUrl.split('?')
+        const url = split[0]
+        await this.docClient
+            .update({
+                TableName: this.todoTable,
+                Key: {
+                    "userId" : userId,
+                    "todoId" : todoId
+                },
+                UpdateExpression: 'set #attachmentUrl = :attachmentUrl',
+                ExpressionAttributeValues: {
+                    ':attachmentUrl': url,
+                },
+                ReturnValues: 'UPDATED_NEW'
+            }).promise();
+    }
+
+    async updateTodo(userId: string, todoId: string, todoUpdate: TodoUpdate) {
+        var params = {
+            TableName: this.todoTable,
+            Key: {
+                "userId" : userId,
+                "todoId" : todoId,
+            },
+            UpdateExpression: 'set #name = :name, #dueDate = :dueDate, #done = :done',
+            ExpressionAttributeValues: {
+              ":name": todoUpdate.name,
+              ":dueDate" : todoUpdate.dueDate,
+              ":done" : todoUpdate.done,
+            },
+            ExpressionAttributeNames: {
+              "#name": 'name',
+              "#dueDate": 'dueDate',
+              "#done": 'done'
+            },
+            ReturnValues:"UPDATED_NEW"
+          }
+          
+          
+        await this.docClient.update(params, function(err, data) {
+            if (err) console.log(err);
+            else console.log(data);
+        }).promise()
+
+    }
+
+    async getUploadUrl(todoId: string){
+
+        return this.s3.getSignedUrl('putObject', {
+          Bucket: this.bucketName,
+          Key: todoId,
+          Expires: 300
+        })
+    
+      }
+}
+
+function createDynamoDBClient(){
+    if(process.env.IS_OFFLINE){
+        console.log("Creating a local DynamoDB instance")
+        return new AWS.DynamoDB.DocumentClient({
+            region: 'localhost',
+            endpoint: 'http://localhost:8000'
+        })
+    }
+
+    return new AWS.DynamoDB.DocumentClient()
+}
+
